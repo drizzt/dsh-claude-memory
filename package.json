@@ -1,0 +1,47 @@
+{
+  "name": "dsh-claude-memory",
+  "version": "0.1.0",
+  "description": "Read-only DeepSeek Harness plugin that surfaces Claude Code's project memory, redacted and byte-budgeted",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "files": [
+    "src",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "scripts": {
+    "test": "node test/smoke.mjs && node test/plugin.mjs && node test/schema.mjs && node test/live.mjs",
+    "test:unit": "node test/smoke.mjs && node test/plugin.mjs",
+    "test:live": "node test/live.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "claude-code",
+    "memory",
+    "agent-memory",
+    "context"
+  ],
+  "author": "GodCC6",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/GodCC6/dsh-claude-memory.git"
+  },
+  "homepage": "https://github.com/GodCC6/dsh-claude-memory#readme",
+  "bugs": {
+    "url": "https://github.com/GodCC6/dsh-claude-memory/issues"
+  }
+}

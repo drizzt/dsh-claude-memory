@@ -1,0 +1,21 @@
+# dsh-claude-memory — profile patch layer.
+#
+# Inserted by `dsh plugin --profile <name> add <path-to-this-package>`.
+# The row is deliberately minimal: the plugin's own module export declares
+# `inject: ['systemPrompt', 'tools']`, so no `inject` key is set here (setting
+# an empty one would shadow the declaration).
+- insert:
+    - id: claude-memory
+      name: dsh-claude-memory
+      config:
+        # System-prompt budget for the current project's MEMORY.md index.
+        maxIndexBytes: 24000
+        # Budget for the user-global ~/.claude/CLAUDE.md (with @imports inlined).
+        maxGlobalBytes: 6000
+        # List child projects that have memory (e.g. sub-repos of a hub dir).
+        includeDescendants: true
+        descendantLimit: 12
+        # 'on' masks credential-shaped text; 'report' counts only; 'off' disables.
+        redactMode: on
+        # Re-read the store when a prompt is assembled and the cache is older.
+        refreshMs: 20000
