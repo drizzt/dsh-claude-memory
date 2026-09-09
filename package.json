@@ -38,6 +38,10 @@
   ],
   "author": "GodCC6",
   "license": "MIT",
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/GodCC6/dsh-claude-memory.git"
