@@ -171,7 +171,9 @@ refreshed cache and returns plain strings.
 ### 2. Claude Code files memory under the git repository root
 
 Memory lives at `~/.claude/projects/<encoded-project-path>/memory/`, where the path is the
-project directory with `/` replaced by `-`. The question is *which* directory counts as the
+project directory with every character other than an ASCII letter or digit replaced by `-`
+(`/home/me/.config` becomes `-home-me--config`). All linked worktrees of a repository share
+the main worktree's key. The question is *which* directory counts as the
 project. Measured on the author's machine, on a docs hub that sits inside a larger repo and
 has no `.git` of its own:
 

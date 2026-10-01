@@ -11,7 +11,7 @@
  */
 
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -78,8 +78,12 @@ test('encodeProjectKey matches the Claude Code slug format', () => {
   assert.equal(encodeProjectKey(fx.ws), fx.wsProject.key)
 })
 
-test('encodeProjectKey strips a Windows drive colon', () => {
-  assert.equal(encodeProjectKey('C:\\Users\\me'), 'C-Users-me')
+test('encodeProjectKey maps a Windows drive colon to a dash', () => {
+  assert.equal(encodeProjectKey('C:\\Users\\me'), 'C--Users-me')
+})
+
+test('encodeProjectKey maps every non-alphanumeric character to a dash', () => {
+  assert.equal(encodeProjectKey('/home/me/.config/my_app (2)'), '-home-me--config-my-app--2-')
 })
 
 test('countIndexEntries counts pointer lines only', () => {
@@ -130,6 +134,25 @@ test('findGitRoot walks up past a non-repo subdirectory', () => {
   assert.equal(findGitRoot(fx.repoWs), fx.repo)
   assert.equal(findGitRoot(fx.repo), fx.repo)
   assert.equal(findGitRoot(fx.hub), null)
+})
+
+test('findGitRoot resolves a linked worktree to its main repository', () => {
+  const adminDir = join(fx.repo, '.git', 'worktrees', 'wt')
+  const worktree = join(fx.root, 'repo-wt')
+  mkdirSync(adminDir, { recursive: true })
+  mkdirSync(join(worktree, 'sub'), { recursive: true })
+  writeFileSync(join(adminDir, 'commondir'), '../..\n')
+  writeFileSync(join(worktree, '.git'), `gitdir: ${adminDir}\n`)
+  assert.equal(findGitRoot(join(worktree, 'sub')), fx.repo)
+})
+
+test('findGitRoot keeps a submodule as its own root', () => {
+  const moduleDir = join(fx.repo, '.git', 'modules', 'sm')
+  const submodule = join(fx.repo, 'sm')
+  mkdirSync(moduleDir, { recursive: true })
+  mkdirSync(submodule, { recursive: true })
+  writeFileSync(join(submodule, '.git'), 'gitdir: ../.git/modules/sm\n')
+  assert.equal(findGitRoot(submodule), submodule)
 })
 
 test('selectProjects resolves an exact project', () => {

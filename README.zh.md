@@ -153,7 +153,8 @@ DSH 插件都适用。
 
 ### 2. Claude Code 把记忆归档在 git 仓库根下
 
-记忆位于 `~/.claude/projects/<项目路径编码>/memory/`，路径编码是项目目录把 `/` 换成 `-`。
+记忆位于 `~/.claude/projects/<项目路径编码>/memory/`，路径编码是项目目录把 ASCII 字母和数字以外的每个字符换成 `-`（`/home/me/.config` 编码为
+`-home-me--config`）。同一仓库的所有 linked worktree 共用主 worktree 的键。
 问题在于**哪个目录算项目**。在作者机器上，对一个位于更大仓库内、自身没有 `.git` 的文档
 hub 实测：
 

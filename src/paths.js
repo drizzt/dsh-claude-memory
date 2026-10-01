@@ -2,8 +2,8 @@
  * Claude Code project-path encoding and memory-directory discovery.
  *
  * Claude Code stores per-project state under `~/.claude/projects/<key>/`, where
- * `<key>` is the absolute project path with `:` removed and every `/` or `\`
- * replaced by `-`. The encoding is lossy (a real `-` in a path is
+ * `<key>` is the absolute project path with every character other than an ASCII
+ * letter or digit replaced by `-`. The encoding is lossy (a real `-` in a path is
  * indistinguishable from a separator), so this module never decodes a key to
  * make security decisions — it only decodes for human-readable display.
  *
@@ -12,7 +12,7 @@
 
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve, sep } from 'node:path'
-import { existsSync, realpathSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { readdirSync, statSync } from 'node:fs'
 
 /** Directory that holds one Claude Code memory set. */
@@ -24,13 +24,13 @@ export const MEMORY_INDEX_FILENAME = 'MEMORY.md'
 /**
  * Encode an absolute filesystem path into a Claude Code project key.
  *
- * `C:\Users\me` → `C-Users-me`, `/Users/me/proj` → `-Users-me-proj`.
+ * `C:\Users\me` becomes `C--Users-me`, `/home/me/.config` becomes `-home-me--config`.
  *
  * @param {string} absolutePath - absolute path to encode.
  * @returns {string} the encoded project key.
  */
 export function encodeProjectKey(absolutePath) {
-  return absolutePath.replace(/:/g, '').replace(/[/\\]/g, '-')
+  return absolutePath.replace(/[^A-Za-z0-9]/g, '-')
 }
 
 /**
@@ -160,7 +160,8 @@ export function listMemoryProjects(claudeHome) {
  * working directory: a session launched in a subdirectory that has no `.git` of
  * its own (for example a docs hub inside a larger repo) writes to the enclosing
  * repo's key, not the subdirectory's. Both a `.git` directory and a `.git` file
- * (worktrees and submodules) mark a root.
+ * (worktrees and submodules) mark a root. A linked worktree resolves to its main
+ * repository, because the memory store is shared across all worktrees of a repo.
  *
  * @param {string} startDir - directory to walk up from.
  * @returns {string|null} the repository root, or null when there is none.
@@ -168,10 +169,33 @@ export function listMemoryProjects(claudeHome) {
 export function findGitRoot(startDir) {
   let current = resolve(expandHome(startDir))
   for (;;) {
-    if (existsSync(join(current, '.git'))) return current
+    if (existsSync(join(current, '.git'))) return mainWorktreeRoot(current)
     const parent = dirname(current)
     if (parent === current) return null
     current = parent
+  }
+}
+
+/**
+ * Map a linked worktree to the root of its main repository.
+ *
+ * A worktree's `.git` is a file pointing at `<main>/.git/worktrees/<name>`, which
+ * holds a `commondir` file pointing back at `<main>/.git`. A submodule's `.git`
+ * file has no `commondir`, so a submodule stays its own root.
+ *
+ * @param {string} root - directory that contains `.git`.
+ * @returns {string} the main repository root, or `root` itself.
+ */
+function mainWorktreeRoot(root) {
+  try {
+    const pointer = /^gitdir:\s*(.+)$/m.exec(readFileSync(join(root, '.git'), 'utf8'))
+    if (pointer === null) return root
+    const gitDir = resolve(root, pointer[1].trim())
+    const commonDir = resolve(gitDir, readFileSync(join(gitDir, 'commondir'), 'utf8').trim())
+    return basename(commonDir) === '.git' ? dirname(commonDir) : root
+  } catch {
+    // `.git` is a directory, or not a worktree: the directory is the root.
+    return root
   }
 }
 
