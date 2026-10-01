@@ -1,14 +1,15 @@
 /**
- * Read-only access to Claude Code's memory store.
+ * Access to Claude Code's memory store.
  *
  * Every read is confined to the resolved Claude Code home: a path is only
  * opened after its real (symlink-resolved) location is proven to live inside
- * that home. Nothing in this module writes.
+ * that home. Writes (`saveMemory`, `deleteMemory`) are opt-in through the
+ * plugin's `enableWrite` and touch only one project memory directory.
  *
  * @module dsh-claude-memory/store
  */
 
-import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import {
   MEMORY_DIRNAME,
@@ -212,6 +213,152 @@ export function findProject(projects, selector) {
   if (withPrefix !== undefined) return withPrefix
   const matches = projects.filter((p) => p.key.toLowerCase().includes(needle))
   return matches.length === 1 ? matches[0] : null
+}
+
+/** Memory types the shared store understands. */
+export const MEMORY_TYPES = ['user', 'feedback', 'project', 'reference']
+
+/** A topic file name: one plain `.md` basename, never the index. */
+const TOPIC_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*\.md$/
+
+/** Index pointer separator, U+2014 between spaces, as the store's own entries use. */
+const INDEX_SEPARATOR = ` ${String.fromCharCode(0x2014)} `
+
+/** Collapse a frontmatter or index value to one line. */
+function oneLine(value) {
+  return String(value ?? '').replace(/\s+/g, ' ').trim()
+}
+
+/** Write a file atomically: a reader sees the old or the new body, never half. */
+function writeAtomic(file, text) {
+  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`
+  writeFileSync(tmp, text, 'utf8')
+  renameSync(tmp, file)
+}
+
+/**
+ * Create a memory directory and prove it lives inside the Claude home.
+ *
+ * @param {string} claudeHome - resolved Claude home.
+ * @param {string} memoryDir - target memory directory.
+ * @returns {string|null} error text, or null when the directory is usable.
+ */
+function prepareMemoryDir(claudeHome, memoryDir) {
+  try {
+    mkdirSync(memoryDir, { recursive: true })
+  } catch (error) {
+    return `cannot create ${memoryDir}: ${error?.message ?? error}`
+  }
+  return confinedRealPath(claudeHome, memoryDir) === null ? `${memoryDir} resolves outside ${claudeHome}` : null
+}
+
+/** Validate a topic file name; returns error text or null. */
+function checkTopicName(file) {
+  if (typeof file !== 'string' || !TOPIC_NAME.test(file) || file === MEMORY_INDEX_FILENAME) {
+    return `invalid file ${JSON.stringify(file)}: use a plain name like "feedback-testing.md"`
+  }
+  return null
+}
+
+/** Read an index body, or start a new one. */
+function loadIndex(claudeHome, indexFile) {
+  if (!existsSync(indexFile)) return '# Memory Index\n'
+  const read = readConfined(claudeHome, indexFile)
+  if (read === null) throw new Error(`${indexFile} is unreadable or outside the Claude home`)
+  return read.text
+}
+
+/** Does an index line point at `file`? */
+function linksTo(line, file) {
+  return /^\s*[-*]\s+\[/.test(line) && line.includes(`](${file})`)
+}
+
+/**
+ * Save one memory: write its topic file and upsert its index line.
+ *
+ * Every other index line is kept byte for byte, so hand-written ordering and
+ * notes survive. Saving an existing file replaces it whole.
+ *
+ * @param {string} claudeHome - resolved Claude home.
+ * @param {string} memoryDir - the project's memory directory.
+ * @param {{file: string, name: string, description: string, type: string, body: string}} memory
+ * @returns {{ok: boolean, text: string}} outcome for the model.
+ */
+export function saveMemory(claudeHome, memoryDir, { file, name, description, type, body }) {
+  const nameError = checkTopicName(file)
+  if (nameError !== null) return { ok: false, text: nameError }
+  if (!MEMORY_TYPES.includes(type)) return { ok: false, text: `type must be one of ${MEMORY_TYPES.join(', ')}` }
+  const title = oneLine(name)
+  const summary = oneLine(description)
+  if (title.length === 0 || summary.length === 0 || typeof body !== 'string' || body.trim().length === 0) {
+    return { ok: false, text: 'save requires non-empty "name", "description" and "body"' }
+  }
+  const dirError = prepareMemoryDir(claudeHome, memoryDir)
+  if (dirError !== null) return { ok: false, text: dirError }
+
+  const topic = [
+    '---',
+    `name: ${title}`,
+    `description: ${summary}`,
+    'metadata:',
+    `  type: ${type}`,
+    '---',
+    '',
+    body.trim(),
+    '',
+  ].join('\n')
+  const indexFile = join(memoryDir, MEMORY_INDEX_FILENAME)
+  const pointer = `- [${title}](${file})${INDEX_SEPARATOR}${summary}`
+  try {
+    const lines = loadIndex(claudeHome, indexFile).split('\n')
+    const at = lines.findIndex((line) => linksTo(line, file))
+    if (at >= 0) {
+      lines[at] = pointer
+    } else {
+      while (lines.length > 0 && lines[lines.length - 1] === '') lines.pop()
+      // Keep a blank line between a heading and the first pointer.
+      if (lines.length > 0 && lines[lines.length - 1].startsWith('#')) lines.push('')
+      lines.push(pointer, '')
+    }
+    writeAtomic(join(memoryDir, file), topic)
+    writeAtomic(indexFile, lines.join('\n'))
+    return { ok: true, text: `${at >= 0 ? 'updated' : 'saved'} ${file}` }
+  } catch (error) {
+    return { ok: false, text: `save failed: ${error?.message ?? error}` }
+  }
+}
+
+/**
+ * Delete one memory: remove its topic file and its index line.
+ *
+ * @param {string} claudeHome - resolved Claude home.
+ * @param {string} memoryDir - the project's memory directory.
+ * @param {string} file - topic file name.
+ * @returns {{ok: boolean, text: string}} outcome for the model.
+ */
+export function deleteMemory(claudeHome, memoryDir, file) {
+  const nameError = checkTopicName(file)
+  if (nameError !== null) return { ok: false, text: nameError }
+  const topicFile = join(memoryDir, file)
+  const indexFile = join(memoryDir, MEMORY_INDEX_FILENAME)
+  try {
+    let found = false
+    if (confinedRealPath(claudeHome, topicFile) !== null) {
+      unlinkSync(topicFile)
+      found = true
+    }
+    if (existsSync(indexFile)) {
+      const lines = loadIndex(claudeHome, indexFile).split('\n')
+      const kept = lines.filter((line) => !linksTo(line, file))
+      if (kept.length !== lines.length) {
+        writeAtomic(indexFile, kept.join('\n'))
+        found = true
+      }
+    }
+    return found ? { ok: true, text: `deleted ${file}` } : { ok: false, text: `no memory ${JSON.stringify(file)}` }
+  } catch (error) {
+    return { ok: false, text: `delete failed: ${error?.message ?? error}` }
+  }
 }
 
 /** Re-exported for callers that build paths next to a project's memory dir. */

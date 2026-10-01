@@ -8,7 +8,8 @@
  * model, plus a tool to open any memory on demand.
  *
  * Design constraints, in order:
- *  1. **Read-only.** Nothing under `~/.claude` is ever written or moved.
+ *  1. **Read-only by default.** Nothing under `~/.claude` is written unless
+ *     `enableWrite` is on; then only the current project's memory directory.
  *  2. **Confined.** Every read resolves through `realpath` and must land inside
  *     the Claude Code home, so a symlinked memory file cannot escape.
  *  3. **Redacted.** Memory notes on this machine contain live credentials, and
@@ -34,10 +35,18 @@
  * @module dsh-claude-memory
  */
 
-import { resolve } from 'node:path'
-import { formatIndexDate, findGitRoot, listMemoryProjects, resolveClaudeHome, selectProjects } from './paths.js'
+import { join, resolve } from 'node:path'
+import {
+  MEMORY_DIRNAME,
+  encodeProjectKey,
+  formatIndexDate,
+  findGitRoot,
+  listMemoryProjects,
+  resolveClaudeHome,
+  selectProjects,
+} from './paths.js'
 import { readInstructionsWithImports, readProjectIndex } from './store.js'
-import { renderGlobalBlock, renderMemoryBlock } from './render.js'
+import { renderGlobalBlock, renderMemoryBlock, renderWriteInstructions } from './render.js'
 import { redactText } from './redact.js'
 import { createClaudeMemoryTool } from './tool.js'
 
@@ -47,7 +56,7 @@ export const name = 'claude-memory'
 export const inject = ['systemPrompt', 'tools']
 
 /** Prompt placement: just after the deployment persona, before tool prose. */
-const SECTION_ORDER = { global: 10, memory: 11 }
+const SECTION_ORDER = { global: 10, memory: 11, instructions: 12 }
 
 /** Maximum distinct working directories cached at once. */
 const MAX_CACHES = 32
@@ -60,6 +69,7 @@ const DEFAULTS = {
   enableGlobalInstructions: true,
   enableMemory: true,
   enableTool: true,
+  enableWrite: false,
   redactMode: 'on',
   refreshMs: 20000,
 }
@@ -93,6 +103,8 @@ function normalizeConfig(raw = {}) {
     enableGlobalInstructions: bool(raw.enableGlobalInstructions, DEFAULTS.enableGlobalInstructions),
     enableMemory: bool(raw.enableMemory, DEFAULTS.enableMemory),
     enableTool: bool(raw.enableTool, DEFAULTS.enableTool),
+    // Writing needs the tool; without it there is no way to save.
+    enableWrite: bool(raw.enableTool, DEFAULTS.enableTool) && bool(raw.enableWrite, DEFAULTS.enableWrite),
     redactMode,
     refreshMs: num(raw.refreshMs, DEFAULTS.refreshMs),
   }
@@ -107,6 +119,22 @@ function normalizeConfig(raw = {}) {
 function agentCwd(agent) {
   const cwd = agent?.session?.header?.cwd
   return typeof cwd === 'string' && cwd.length > 0 ? resolve(cwd) : null
+}
+
+/**
+ * Where saves for a working directory land.
+ *
+ * The same rule the store's other writer uses: the git repository root (the
+ * main worktree for a linked one), else the directory itself. Never a guessed
+ * neighbour, so a save cannot end up in another project's memory.
+ *
+ * @param {string} claudeHome - resolved Claude home.
+ * @param {string} cwd - session working directory.
+ * @returns {{key: string, memoryDir: string}} write target.
+ */
+function writeTarget(claudeHome, cwd) {
+  const key = encodeProjectKey(findGitRoot(cwd) ?? cwd)
+  return { key, memoryDir: join(claudeHome, 'projects', key, MEMORY_DIRNAME) }
 }
 
 /**
@@ -129,7 +157,7 @@ export function apply(ctx, rawConfig = {}) {
       const oldest = caches.keys().next()
       if (oldest.done !== true) caches.delete(oldest.value)
     }
-    entry = { memoryBlock: '', globalBlock: '', projects: [], currentKey: null, lastRefreshAt: 0, error: null }
+    entry = { memoryBlock: '', globalBlock: '', instructionsBlock: '', projects: [], currentKey: null, lastRefreshAt: 0, error: null }
     caches.set(cwd, entry)
     return entry
   }
@@ -183,6 +211,7 @@ export function apply(ctx, rawConfig = {}) {
           gitRoot,
           maxBytes: config.maxIndexBytes,
           hits,
+          writable: config.enableWrite,
         })
       } else {
         entry.memoryBlock = ''
@@ -200,6 +229,14 @@ export function apply(ctx, rawConfig = {}) {
         entry.globalBlock = ''
       }
 
+      if (config.enableWrite) {
+        const target = writeTarget(config.claudeHome, cwd)
+        entry.instructionsBlock = renderWriteInstructions({
+          key: target.key,
+          exists: annotatedByKey.has(target.key),
+        })
+      }
+
       entry.projects = annotated
       entry.currentKey = currentProject === null ? null : currentProject.key
       entry.error = null
@@ -207,6 +244,7 @@ export function apply(ctx, rawConfig = {}) {
       entry.error = error instanceof Error ? error.message : String(error)
       entry.memoryBlock = ''
       entry.globalBlock = ''
+      entry.instructionsBlock = ''
     }
   }
 
@@ -222,6 +260,13 @@ export function apply(ctx, rawConfig = {}) {
       order: SECTION_ORDER.memory,
       text: () => refreshIfStale(cwd).memoryBlock,
     })
+    if (config.enableWrite) {
+      systemPrompt.section({
+        name: 'claude-memory:instructions',
+        order: SECTION_ORDER.instructions,
+        text: () => refreshIfStale(cwd).instructionsBlock,
+      })
+    }
   }
 
   // Seed the fallback before the first request so the first prompt is complete.
@@ -257,6 +302,14 @@ export function apply(ctx, rawConfig = {}) {
         if (entry.currentKey === null) return null
         return entry.projects.find((p) => p.key === entry.currentKey) ?? null
       },
+      write: config.enableWrite
+        ? {
+            target: (cwd) => writeTarget(config.claudeHome, cwd),
+            // A save can create the project or change its index: rebuild now
+            // so the next prompt and tool call see it.
+            changed: (cwd) => refresh(cwd),
+          }
+        : undefined,
     })
     try {
       ctx.tools.register(tool)

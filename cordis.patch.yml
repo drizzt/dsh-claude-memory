@@ -19,3 +19,5 @@
         redactMode: on
         # Re-read the store when a prompt is assembled and the cache is older.
         refreshMs: 20000
+        # Let the model save and delete memories in the current project.
+        enableWrite: false

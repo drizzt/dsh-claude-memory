@@ -1,6 +1,6 @@
 # dsh-claude-memory
 
-一个只读的 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 插件，把
+一个默认只读的 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 插件，把
 **Claude Code 已有的项目记忆**接进 DSH —— 让 Claude Code 额度耗尽后，任务能在 DSH 里接着做。
 
 English: [README.md](README.md)
@@ -20,7 +20,7 @@ English: [README.md](README.md)
 - 注册一个 `claude_memory` 工具，让模型按需打开某条记忆、列项目、或跨主题搜索 ——
   完整正文默认不进 prompt。
 - 在内容到达模型服务商**之前**就把凭据形状的文本打码。
-- 绝不写入、移动或删除 Claude home 下的任何文件。
+- 除非开启 `enableWrite`，绝不写入、移动或删除 Claude home 下的任何文件。
 
 ## 安装
 
@@ -57,6 +57,7 @@ dsh --profile web --dump-config | grep -A 10 claude-memory
 | `enableMemory` | `true` | 是否注入记忆块 |
 | `enableGlobalInstructions` | `true` | 是否注入用户级指令 |
 | `enableTool` | `true` | 是否注册 `claude_memory` 工具 |
+| `enableWrite` | `false` | 允许模型在当前项目保存、删除记忆（需要 `enableTool`） |
 | `redactMode` | `on` | `on` 打码、`report` 只统计、`off` 关闭 |
 | `refreshMs` | `20000` | prompt 组装时若缓存超过此值就重读 |
 
@@ -101,11 +102,37 @@ checkout 启动、会话在另一个目录跑的时候，两者必然不同。
 
 `project` 可传完整键、键后缀或唯一子串。所有返回都过同一个脱敏器并受 20 KB 上限约束。
 
+## 写入支持
+
+默认关闭。在 profile 的 patch 里设 `enableWrite: true`，记忆即可双向共享：在 DSH 里记下的
+内容，下一次 Claude 会话能看到，反之亦然。
+
+```yaml
+- id: claude-memory
+  config:
+    enableWrite: true
+```
+
+开启后工具多两个 action，并新增第三个 prompt 段落（`claude-memory:instructions`），告诉模型
+什么值得记、何时保存，让它不经提醒也会维护记忆。
+
+| action | 参数 | 效果 |
+|---|---|---|
+| `save` | `file`、`name`、`description`、`type`、`body` | 写入带 `name`/`description`/`metadata.type` frontmatter 的 `<file>`，并更新或追加它在 `MEMORY.md` 里的指针行 |
+| `delete` | `file` | 删除 `<file>` 及其指针行 |
+
+- **只写当前项目**：目标是 git 仓库根（linked worktree 取主 worktree），否则是工作目录，
+  与另一端写入的目录一致。绝不写入 `freshest` 猜测的项目，也没有 `project` 参数。
+- **索引按行更新，不重建**：只改链接到 `<file>` 的那一行，标题、顺序和其他行逐字节保留。
+- **收敛**：`file` 必须是 `MEMORY.md` 以外的普通 `.md` 文件名，记忆目录必须解析在
+  `claudeHome` 之内。主题文件和索引都先写临时文件再 `rename`，并发读者不会读到半个文件。
+- **写入不脱敏**：笔记按模型写的原样落盘；读回发给服务商的内容仍然全部脱敏。
+
 ## 安全模型
 
 威胁模型很具体：为 A 厂商模型写的笔记，即将发给 B 厂商。
 
-- **只读**：没有任何代码路径写入、移动或删除 `claudeHome` 下的文件。
+- **默认只读**：`enableWrite` 关闭（默认）时，没有任何代码路径写入、移动或删除 `claudeHome` 下的文件。开启后见[写入支持](#写入支持)。
 - **收敛**：每个路径都经 `realpath` 解析且必须落在 `claudeHome` 内；指向外部的符号链接
   会被拒绝；含路径分隔符的主题名会被拒绝。
 - **注入前脱敏**：13 条规则覆盖厂商 key 形状、Bearer token、PEM 块、JWT、带熵阈值的

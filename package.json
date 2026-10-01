@@ -1,7 +1,7 @@
 {
   "name": "dsh-claude-memory",
   "version": "0.1.0",
-  "description": "Read-only DeepSeek Harness plugin that surfaces Claude Code's project memory, redacted and byte-budgeted",
+  "description": "Read-only by default DeepSeek Harness plugin that surfaces Claude Code's project memory, redacted and byte-budgeted",
   "type": "module",
   "main": "src/index.js",
   "exports": {

@@ -93,6 +93,29 @@ check('parameters rejects an unknown action', () => {
   assert.ok(violations.length > 0, 'expected a violation')
 })
 
+const writable = createClaudeMemoryTool({
+  claudeHome: '/nonexistent',
+  redactMode: 'on',
+  projects: () => [],
+  current: () => null,
+  write: { target: () => ({ key: '-x', memoryDir: '/nonexistent' }), changed: () => {} },
+})
+
+check('write-enabled parameters pass assertSupportedJsonSchema', () => {
+  assertSupportedJsonSchema(writable.parameters)
+})
+
+check('write-enabled parameters accept a full save call', () => {
+  const call = { action: 'save', file: 'a.md', name: 'A', description: 'a', type: 'user', body: 'b' }
+  const violations = validateJsonSchemaValue(writable.parameters, call, '')
+  assert.deepEqual(violations, [], JSON.stringify(violations))
+})
+
+check('write-enabled parameters reject an unknown memory type', () => {
+  const violations = validateJsonSchemaValue(writable.parameters, { action: 'save', type: 'secret' }, '')
+  assert.ok(violations.length > 0, 'expected a violation')
+})
+
 check('parameters rejects an unknown property', () => {
   const violations = validateJsonSchemaValue(tool.parameters, { action: 'projects', extra: 1 }, '')
   assert.ok(violations.length > 0, 'expected a violation')

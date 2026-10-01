@@ -1,6 +1,6 @@
 # dsh-claude-memory
 
-A read-only [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plugin that
+A read-only by default [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plugin that
 surfaces **Claude Code's existing project memory** inside DSH — so a task can continue in
 DSH after a Claude Code quota runs out.
 
@@ -21,7 +21,7 @@ DSH after a Claude Code quota runs out.
 - Registers one `claude_memory` tool so the model can open any memory, list projects, or
   search across a project's notes — full bodies never enter the prompt by default.
 - Masks credential-shaped text **before** anything reaches the model provider.
-- Never writes, moves, or deletes anything under the Claude home.
+- Never writes, moves, or deletes anything under the Claude home, unless `enableWrite` is on.
 
 ## Install
 
@@ -59,6 +59,7 @@ layer or a `--patch` overlay.
 | `enableMemory` | `true` | Inject the memory block. |
 | `enableGlobalInstructions` | `true` | Inject the user-global instructions. |
 | `enableTool` | `true` | Register the `claude_memory` tool. |
+| `enableWrite` | `false` | Let the model save and delete memories in the current project (needs `enableTool`). |
 | `redactMode` | `on` | `on` masks secrets, `report` counts only, `off` disables. |
 | `refreshMs` | `20000` | Re-read the store when a prompt is assembled and the cache is older. |
 
@@ -109,12 +110,44 @@ session started elsewhere sees its own project.
 `project` accepts a full key, a key suffix, or a unique substring. Every response passes the
 same redactor and a 20 KB cap.
 
+## Write support
+
+Off by default. Set `enableWrite: true` in the profile patch to share one memory store in
+both directions, so notes taken in DSH show up in the next Claude session and vice versa:
+
+```yaml
+- id: claude-memory
+  config:
+    enableWrite: true
+```
+
+With it on, the tool gains two actions, and a third prompt section
+(`claude-memory:instructions`) tells the model what is worth remembering and when to save,
+so it keeps the memory up to date without being asked.
+
+| Action | Arguments | Effect |
+|---|---|---|
+| `save` | `file`, `name`, `description`, `type`, `body` | Writes `<file>` with `name`/`description`/`metadata.type` frontmatter and upserts its `MEMORY.md` pointer line |
+| `delete` | `file` | Removes `<file>` and its pointer line |
+
+- **Current project only.** The target is the git repository root (the main worktree for a
+  linked one), else the working directory: the same directory the other writer uses. A
+  `freshest` guess is never written to, and there is no `project` argument.
+- **Index lines are upserted, not rebuilt.** Only the line linking to `<file>` changes;
+  headings, ordering and every other line stay byte for byte.
+- **Confined.** `file` must be a plain `.md` basename other than `MEMORY.md`, and the memory
+  directory must resolve inside `claudeHome`. Topic file and index are written through a
+  temporary file and `rename`, so a concurrent reader never sees half a file.
+- **Not redacted on write.** Notes land on disk as the model wrote them, like any other
+  memory; redaction still applies to everything read back toward the provider.
+
 ## Security model
 
 The threat model is concrete: notes written for one vendor's model provider are about to be
 sent to a different one.
 
-- **Read-only.** No code path writes, moves, or deletes anything under `claudeHome`.
+- **Read-only by default.** With `enableWrite` off (the default) no code path writes, moves,
+  or deletes anything under `claudeHome`. With it on, see [Write support](#write-support).
 - **Confined.** Every path is `realpath`-resolved and must stay inside `claudeHome`; a
   symlinked file pointing outside is rejected. Topic names containing a path separator are
   rejected.

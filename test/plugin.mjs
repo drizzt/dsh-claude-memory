@@ -271,5 +271,55 @@ await checkAsync('the tool resolves against the calling agent cwd', async () => 
   assert.ok(value.text.includes(fx.wsProject.key), value.text.slice(0, 200))
 })
 
+check('writing is off by default: no save action, no instructions section', () => {
+  const tool = ctx.registeredTools[0]
+  assert.ok(!tool.parameters.properties.action.enum.includes('save'))
+  assert.ok(tool.description.includes('read-only'))
+})
+
+await checkAsync('enableWrite saves into the session git root and shows it next prompt', async () => {
+  const bare = fakeCtx()
+  apply(bare, { claudeHome: fx.home, cwd: SERVER_CWD, refreshMs: 60000, enableWrite: true })
+  const tool = bare.registeredTools[0]
+  assert.ok(tool.parameters.properties.action.enum.includes('save'))
+  assert.ok(!tool.description.includes('read-only'))
+
+  const { sections: agentSections, agent } = fakeAgent(fx.repoWs)
+  bare.emit('agent/created', { agent })
+  assert.deepEqual(agentSections.map((s) => s.name).sort(), [
+    'claude-memory:global',
+    'claude-memory:instructions',
+    'claude-memory:memory',
+  ])
+  const instructions = agentSections.find((s) => s.name === 'claude-memory:instructions').text()
+  assert.ok(instructions.includes(`Saves go to project ${fx.repoProject.key}.`), instructions.slice(0, 600))
+
+  const value = await tool.execute(
+    { action: 'save', file: 'plugin-saved.md', name: 'Saved', description: 'saved via plugin', type: 'user', body: 'x' },
+    { agent },
+  )
+  assert.ok(value.text.includes(`saved plugin-saved.md (${fx.repoProject.key})`), value.text)
+  // refreshMs is long, so only the post-save refresh can make the entry visible.
+  const memory = agentSections.find((s) => s.name === 'claude-memory:memory').text()
+  assert.ok(memory.includes('saved via plugin'), 'saved entry must appear without waiting for refreshMs')
+})
+
+await checkAsync('enableWrite creates memory for a directory that has none', async () => {
+  const bare = fakeCtx()
+  apply(bare, { claudeHome: fx.home, cwd: fx.hub, refreshMs: 0, enableWrite: true })
+  assert.ok(sectionText(bare, 'claude-memory:instructions').includes('has no memory yet'))
+  const tool = bare.registeredTools[0]
+  const value = await tool.execute({ action: 'save', file: 'hub.md', name: 'Hub', description: 'hub note', type: 'project', body: 'y' })
+  assert.ok(value.text.includes(`(${fx.keyOf(fx.hub)})`), value.text)
+  assert.ok(sectionText(bare, 'claude-memory:memory').includes('hub note'))
+})
+
+check('enableWrite without the tool stays read-only', () => {
+  const bare = fakeCtx()
+  apply(bare, { claudeHome: fx.home, cwd: fx.ws, refreshMs: 0, enableWrite: true, enableTool: false })
+  assert.equal(bare.registeredTools.length, 0)
+  assert.ok(!bare.sections.some((s) => s.name === 'claude-memory:instructions'))
+})
+
 console.log(`\n${passed} passed, ${failed} failed\n`)
 process.exit(failed === 0 ? 0 : 1)

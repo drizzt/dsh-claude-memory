@@ -10,7 +10,16 @@
  * @module dsh-claude-memory/tool
  */
 
-import { findProject, listTopicFiles, readProjectIndex, readTopic, searchTopics } from './store.js'
+import {
+  MEMORY_TYPES,
+  deleteMemory,
+  findProject,
+  listTopicFiles,
+  readProjectIndex,
+  readTopic,
+  saveMemory,
+  searchTopics,
+} from './store.js'
 import { describeHits, redactText } from './redact.js'
 import { truncateToBytes } from './render.js'
 import { projectLabel } from './paths.js'
@@ -65,6 +74,46 @@ const PARAMETERS = {
   },
   required: ['action'],
   additionalProperties: false,
+}
+
+const WRITE_DESCRIPTION = [
+  '',
+  'Write actions (current project only, never another project):',
+  '- "save": create or replace one memory. Requires "file", "name", "description", "type", "body".',
+  '  The topic file gets frontmatter and the index gets one pointer line; other index lines are kept.',
+  '  To update a memory, "read" it first, then "save" the whole new body under the same "file".',
+  '- "delete": remove one memory file and its index line. Requires "file".',
+].join('\n')
+
+const WRITE_PROPERTIES = {
+  name: { type: 'string', description: 'Short title for the memory (action="save").' },
+  description: {
+    type: 'string',
+    description: 'One-line summary used to decide relevance later; becomes the index hook (action="save").',
+  },
+  type: { type: 'string', enum: MEMORY_TYPES, description: 'Memory type (action="save").' },
+  body: {
+    type: 'string',
+    description: 'Markdown body without frontmatter. For feedback/project, follow the fact with **Why:** and **How to apply:** lines (action="save").',
+  },
+}
+
+/**
+ * Parameter schema, with the write actions only when writing is enabled.
+ *
+ * @param {boolean} writable - whether save/delete are offered.
+ * @returns {object} JSON schema.
+ */
+function parametersFor(writable) {
+  if (!writable) return PARAMETERS
+  return {
+    ...PARAMETERS,
+    properties: {
+      ...PARAMETERS.properties,
+      action: { ...PARAMETERS.properties.action, enum: [...PARAMETERS.properties.action.enum, 'save', 'delete'] },
+      ...WRITE_PROPERTIES,
+    },
+  }
 }
 
 const OUTPUT_SCHEMA = {
@@ -177,6 +226,16 @@ async function run(args, deps, cwd) {
     return { text: finalize(lines.join('\n'), deps) }
   }
 
+  if (deps.write !== undefined && (action === 'save' || action === 'delete')) {
+    const target = deps.write.target(cwd)
+    const result =
+      action === 'save'
+        ? saveMemory(deps.claudeHome, target.memoryDir, args)
+        : deleteMemory(deps.claudeHome, target.memoryDir, args.file)
+    if (result.ok) deps.write.changed(cwd)
+    return { text: `${result.text} (${target.key})` }
+  }
+
   return { text: `Unsupported action ${JSON.stringify(String(action))}.` }
 }
 
@@ -187,14 +246,16 @@ async function run(args, deps, cwd) {
  * plugin imports no harness packages and therefore resolves inside a profile
  * whose `node_modules` does not contain them.
  *
- * @param {object} deps - plugin-owned accessors.
+ * @param {object} deps - plugin-owned accessors. `deps.write`, when present,
+ *   enables save/delete: `target(cwd)` returns `{key, memoryDir}` and
+ *   `changed(cwd)` drops the cached prompt for that directory.
  * @returns {object} a registry-ready tool definition.
  */
 export function createClaudeMemoryTool(deps) {
   return {
     name: TOOL_NAME,
-    description: DESCRIPTION,
-    parameters: PARAMETERS,
+    description: deps.write === undefined ? DESCRIPTION : DESCRIPTION.replace(' (read-only)', '') + WRITE_DESCRIPTION,
+    parameters: parametersFor(deps.write !== undefined),
     output: {
       schema: OUTPUT_SCHEMA,
       render: (_args, value) => [{ type: 'text', text: String(value?.text ?? '') }],

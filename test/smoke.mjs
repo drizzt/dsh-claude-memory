@@ -11,7 +11,7 @@
  */
 
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -28,10 +28,12 @@ import {
   selectProjects,
 } from '../src/paths.js'
 import {
+  deleteMemory,
   findProject,
   readConfined,
   readInstructionsWithImports,
   readProjectIndex,
+  saveMemory,
   searchTopics,
 } from '../src/store.js'
 import { redactText, REDACTION_MARK } from '../src/redact.js'
@@ -430,6 +432,73 @@ await asyncTest('tool definition shape is registry-valid', async () => {
 await asyncTest('tool output never exceeds the byte cap', async () => {
   const value = await tool.execute({ action: 'index' })
   assert.ok(byteLength(value.text) <= 20200, `got ${byteLength(value.text)} bytes`)
+})
+
+// --------------------------------------------------------------------------
+console.log('\nwrite')
+// --------------------------------------------------------------------------
+
+const writeDir = join(fx.home, 'projects', '-write-test', 'memory')
+const memo = { file: 'feedback-x.md', name: 'X rule', description: 'first hook', type: 'feedback', body: 'Do X.\n\n**Why:** y' }
+
+test('saveMemory creates topic file, frontmatter and a new index', () => {
+  const result = saveMemory(fx.home, writeDir, memo)
+  assert.ok(result.ok, result.text)
+  const topic = readFileSync(join(writeDir, 'feedback-x.md'), 'utf8')
+  assert.ok(topic.startsWith('---\nname: X rule\ndescription: first hook\nmetadata:\n  type: feedback\n---\n\nDo X.'))
+  const index = readFileSync(join(writeDir, 'MEMORY.md'), 'utf8')
+  assert.ok(index.startsWith('# Memory Index\n\n- [X rule](feedback-x.md) '), index)
+  assert.equal(countIndexEntries(index), 1)
+})
+
+test('saveMemory replaces only its own index line', () => {
+  const indexFile = join(writeDir, 'MEMORY.md')
+  const before = readFileSync(indexFile, 'utf8')
+  writeFileSync(indexFile, `${before}- [Other](other.md) - hand written\nfree note line\n`)
+  const result = saveMemory(fx.home, writeDir, { ...memo, description: 'second hook' })
+  assert.ok(result.ok && result.text.startsWith('updated'), result.text)
+  const lines = readFileSync(indexFile, 'utf8').split('\n')
+  assert.ok(lines[2].includes('second hook'), lines.join('\n'))
+  assert.ok(lines.includes('- [Other](other.md) - hand written'))
+  assert.ok(lines.includes('free note line'))
+  assert.equal(countIndexEntries(lines.join('\n')), 2)
+})
+
+test('saveMemory rejects bad file names and types', () => {
+  for (const file of ['../escape.md', 'a/b.md', 'MEMORY.md', 'note.txt', '.hidden.md', '']) {
+    assert.equal(saveMemory(fx.home, writeDir, { ...memo, file }).ok, false, file)
+  }
+  assert.equal(saveMemory(fx.home, writeDir, { ...memo, type: 'secret' }).ok, false)
+  assert.equal(saveMemory(fx.home, writeDir, { ...memo, body: '  ' }).ok, false)
+})
+
+test('saveMemory refuses a memory directory symlinked out of the home', () => {
+  const outside = mkdtempSync(join(tmpdir(), 'cm-out-'))
+  const projectDir = join(fx.home, 'projects', '-escape-test')
+  mkdirSync(projectDir, { recursive: true })
+  symlinkSync(outside, join(projectDir, 'memory'))
+  try {
+    assert.equal(saveMemory(fx.home, join(projectDir, 'memory'), memo).ok, false)
+    assert.equal(existsSync(join(outside, 'feedback-x.md')), false)
+  } finally {
+    rmSync(outside, { recursive: true, force: true })
+  }
+})
+
+test('deleteMemory removes the file and its line, keeps the rest', () => {
+  const result = deleteMemory(fx.home, writeDir, 'feedback-x.md')
+  assert.ok(result.ok, result.text)
+  assert.equal(existsSync(join(writeDir, 'feedback-x.md')), false)
+  const index = readFileSync(join(writeDir, 'MEMORY.md'), 'utf8')
+  assert.ok(!index.includes('feedback-x.md'))
+  assert.ok(index.includes('hand written'))
+  assert.equal(deleteMemory(fx.home, writeDir, 'feedback-x.md').ok, false)
+})
+
+await asyncTest('read-only tool has no write actions', async () => {
+  assert.ok(!tool.parameters.properties.action.enum.includes('save'))
+  const value = await tool.execute({ action: 'save', file: 'a.md' })
+  assert.ok(value.text.includes('Unsupported action'))
 })
 
 // --------------------------------------------------------------------------
